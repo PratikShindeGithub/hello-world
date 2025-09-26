@@ -12,6 +12,14 @@ LOG_FILE="$LOG_DIR/update_$(date +'%Y%m%d_%H%M%S').log"
 # Track step status & time
 declare -A step_status
 declare -A step_time
+steps=(
+    "Step 1: Check Git branch"
+    "Step 2: Reset master and merge staging"
+    "Step 3: Show Git log"
+    "Step 4: Push changes"
+    "Step 5: Update CCC"
+    "Step 6: Validate updates"
+)
 
 # Function to log and display output
 log() {
@@ -85,14 +93,14 @@ step6() {
     done
 }
 
-# Show summary
+# Show summary in step order
 show_summary() {
     log "\n========== SUMMARY =========="
     local slowest_step=""
     local max_time=0
 
-    for step in "${!step_status[@]}"; do
-        local status="${step_status[$step]}"
+    for step in "${steps[@]}"; do
+        local status="${step_status[$step]:-❌ Skipped}"
         local duration="${step_time[$step]:-N/A}"
 
         if [[ $duration != "N/A" && $duration -gt $max_time ]]; then
