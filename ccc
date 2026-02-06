@@ -1,48 +1,47 @@
 #!/bin/bash
 
 SERVERS=(
-"tbp-web@deccc3dr"
-"tbp-web@deccc4dr"
-"tbp-web@deptc3hr"
-"tbp-web@deptc4hr"
-"tbp-web@deptc5hr"
-"tbp-web@deptc6hr"
+tbp-web@deccc3dr
+tbp-web@deccc4dr
+tbp-web@deptc3hr
+tbp-web@deptc4hr
+tbp-web@deptc5hr
+tbp-web@deptc6hr
 )
 
 LOG_DIR="/opt/web/tomcat/ccc/logs"
+SSH_OPTS="-o BatchMode=yes"
 
-LOG_PATTERNS=(
-"ccc-main.log*"
-"ccc-exception.log*"
-"access*.log*"
-"stdout.log*"
-)
+EXPORT="ccc_export_$(date +%Y%m%d_%H%M%S).txt"
 
-SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+echo "=========== CCC LOG SEARCH ==========="
+echo "1) Main logs"
+echo "2) Exception logs"
+echo "3) Access logs"
+echo "4) Stdout logs"
+read -p "Select log type: " TYPE
 
-EXPORT_FILE="ccc_logs_$(date +%Y%m%d_%H%M%S).txt"
+case $TYPE in
+1) PREFIX="ccc-main.log"; FORMAT="HOUR" ;;
+2) PREFIX="ccc-exception.log"; FORMAT="HOUR" ;;
+3) PREFIX="access"; FORMAT="DATE" ;;
+4) PREFIX="stdout.log"; FORMAT="DATE" ;;
+*) echo "Invalid"; exit 1 ;;
+esac
 
-GREEN="\e[32m"
-BLUE="\e[34m"
-RED="\e[31m"
-RESET="\e[0m"
-
-clear
-echo -e "${BLUE}========= CCC CENTRAL LOG TOOL =========${RESET}"
-echo ""
-echo "1) Search keyword (all logs + gz)"
-echo "2) Real-time live logs"
-echo "3) Exit"
-
-read -p "Choose: " MODE
-[[ "$MODE" == "3" ]] && exit 0
+if [[ "$FORMAT" == "HOUR" ]]; then
+  read -p "Enter timestamp (YYYYMMDDHH): " TS
+  PATTERN="$PREFIX.$TS*"
+else
+  read -p "Enter date (YYYY-MM-DD): " TS
+  PATTERN="$PREFIX.$TS.log*"
+fi
 
 read -p "Enter keyword: " KEYWORD
 
-touch "$EXPORT_FILE"
-
-echo "CCC LOG EXPORT - $(date)" >> "$EXPORT_FILE"
-echo "====================================" >> "$EXPORT_FILE"
+> "$EXPORT"
+echo "LOG TYPE: $PREFIX  TIME: $TS" >> "$EXPORT"
+echo "============================" >> "$EXPORT"
 
 search_server() {
   SERVER=$1
@@ -50,43 +49,21 @@ search_server() {
 
   ssh $SSH_OPTS "$SERVER" "
     cd $LOG_DIR || exit
-    for p in ${LOG_PATTERNS[@]}; do
-      for f in \$p; do
-        if [[ \"\$f\" == *.gz ]]; then
-          zgrep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
-        else
-          grep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
-        fi
-      done
+    for f in $PATTERN; do
+      [[ -e \$f ]] || continue
+      if [[ \$f == *.gz ]]; then
+        zgrep -in \"$KEYWORD\" \"\$f\"
+      else
+        grep -in \"$KEYWORD\" \"\$f\"
+      fi
     done
-  " | sed "s/^/[$HOST] /" | tee -a "$EXPORT_FILE"
+  " | sed "s/^/[$HOST] /" | tee -a "$EXPORT"
 }
 
-live_server() {
-  SERVER=$1
-  HOST=${SERVER#*@}
+for S in "${SERVERS[@]}"; do
+  search_server "$S" &
+done
+wait
 
-  ssh $SSH_OPTS "$SERVER" "
-    tail -F \
-      $LOG_DIR/ccc-main.log* \
-      $LOG_DIR/ccc-exception.log* \
-      $LOG_DIR/stdout.log*
-  " | sed "s/^/[$HOST] /"
-}
-
-if [[ "$MODE" == "1" ]]; then
-  for SERVER in "${SERVERS[@]}"; do
-    search_server "$SERVER" &
-  done
-  wait
-
-  echo ""
-  echo -e "${GREEN}Logs exported to:${RESET} $EXPORT_FILE"
-
-elif [[ "$MODE" == "2" ]]; then
-  echo -e "${RED}Live mode (not exported). Press CTRL+C to stop.${RESET}"
-  for SERVER in "${SERVERS[@]}"; do
-    live_server "$SERVER" &
-  done
-  wait
-fi
+echo ""
+echo "Exported to: $EXPORT"
