@@ -1,133 +1,127 @@
 #!/bin/bash
 
-CCC_PATH="/home/tbp-web/ccc-conf"
-SCRIPT_PATH="/opt/web/scripte"
-SERVERS="deccc3dr deccc4dr deptc3hr deptc4hr deptc5hr deptc6hr"
-
-# Log file with timestamp
-LOG_DIR="/var/log/ccc-update"
-mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/update_$(date +'%Y%m%d_%H%M%S').log"
-
-# Track step status & time
-declare -A step_status
-declare -A step_time
-steps=(
-    "Step 1: Check Git branch"
-    "Step 2: Reset master and merge staging"
-    "Step 3: Show Git log"
-    "Step 4: Push changes"
-    "Step 5: Update CCC"
-    "Step 6: Validate updates"
+SERVERS=(
+"tbp-web@deccc3dr"
+"tbp-web@deccc4dr"
+"tbp-web@deptc3hr"
+"tbp-web@deptc4hr"
+"tbp-web@deptc5hr"
+"tbp-web@deptc6hr"
 )
 
-# Function to log and display output
-log() {
-    echo -e "$@" | tee -a "$LOG_FILE"
+LOG_DIR="/opt/web/tomcat/ccc/logs"
+
+LOG_PATTERNS=(
+"ccc-main.log*"
+"ccc-exception.log*"
+"access*.log*"
+"stdout.log*"
+)
+
+GREEN="\e[32m"
+RED="\e[31m"
+YELLOW="\e[33m"
+BLUE="\e[34m"
+RESET="\e[0m"
+
+clear
+echo -e "${BLUE}========================================${RESET}"
+echo -e "${BLUE}        CCC CENTRAL LOG TOOL             ${RESET}"
+echo -e "${BLUE}========================================${RESET}"
+echo ""
+echo "1) Search keyword in all logs (incl gz)"
+echo "2) Real-time live monitoring"
+echo "3) Error summary"
+echo "4) Exit"
+
+read -p "Select option: " MODE
+
+[[ "$MODE" == "4" ]] && exit 0
+
+read -p "Enter keyword (not required for summary): " KEYWORD
+
+build_cmd() {
+  local CMD=""
+
+  for PAT in "${LOG_PATTERNS[@]}"; do
+    CMD+=" $LOG_DIR/$PAT"
+  done
+
+  echo "$CMD"
 }
 
-# Function to confirm before running step
-confirm_step() {
-    local step_name="$1"
-    read -rp "$step_name (y/n): " answer
-    case $answer in
-        [Yy]*) return 0 ;;  # Yes → run
-        *) 
-           log "❌ User chose to stop at: $step_name"
-           step_status["$step_name"]="❌ Skipped (Stopped here)"
-           show_summary
-           exit 1
-        ;;
-    esac
-}
+FILES=$(build_cmd)
 
-# Function to run step with timing
-run_step() {
-    local step_name="$1"
-    local step_func="$2"
+search_logs() {
+  SERVER=$1
+  echo -e "${GREEN}===== $SERVER =====${RESET}"
 
-    local start=$(date +%s)
-    $step_func
-    local end=$(date +%s)
-    local duration=$((end - start))
+  ssh "$SERVER" "
+    cd $LOG_DIR || exit
 
-    step_status["$step_name"]="✅ Done"
-    step_time["$step_name"]=$duration
-}
-
-# Step 1: Check Git Branch
-step1() {
-    cd "$CCC_PATH" || exit
-    git status 2>&1 | tee -a "$LOG_FILE"
-}
-
-# Step 2: Reset and Merge Staging
-step2() {
-    cd "$CCC_PATH" || exit
-    ./reset-master-and-merge-staging.sh 2>&1 | tee -a "$LOG_FILE"
-}
-
-# Step 3: Show Git Log
-step3() {
-    cd "$CCC_PATH" || exit
-    git log --oneline -n 10 2>&1 | tee -a "$LOG_FILE"
-}
-
-# Step 4: Push Changes
-step4() {
-    cd "$CCC_PATH" || exit
-    git push origin master 2>&1 | tee -a "$LOG_FILE"
-}
-
-# Step 5: Update CCC
-step5() {
-    cd "$SCRIPT_PATH" || exit
-    ./checkout-ccc-config-all.sh 2>&1 | tee -a "$LOG_FILE"
-}
-
-# Step 6: Validate Updates
-step6() {
-    for i in $SERVERS; do
-        log "===== $i ====="
-        ssh "$i" "ls -ltr /opt/web/tomcat/ccc/conf/ccc/repos" 2>&1 | tee -a "$LOG_FILE"
+    for f in $FILES; do
+      if [[ \"\$f\" == *.gz ]]; then
+        zgrep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
+      else
+        grep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
+      fi
     done
+  "
 }
 
-# Show summary in step order
-show_summary() {
-    log "\n========== SUMMARY =========="
-    local slowest_step=""
-    local max_time=0
+live_logs() {
+  SERVER=$1
+  echo -e "${GREEN}--- LIVE $SERVER ---${RESET}"
 
-    for step in "${steps[@]}"; do
-        local status="${step_status[$step]:-❌ Skipped}"
-        local duration="${step_time[$step]:-N/A}"
-
-        if [[ $duration != "N/A" && $duration -gt $max_time ]]; then
-            max_time=$duration
-            slowest_step="$step"
-        fi
-
-        log "$step : $status (Time: ${duration}s)"
-    done
-
-    if [[ -n "$slowest_step" ]]; then
-        log "\n⚡ Slowest step: $slowest_step (${max_time}s)"
-    fi
-
-    log "============================="
-    log "Log file: $LOG_FILE"
+  ssh "$SERVER" "
+    tail -F \
+      $LOG_DIR/ccc-main.log* \
+      $LOG_DIR/ccc-exception.log* \
+      $LOG_DIR/stdout.log* 2>/dev/null
+  " | sed "s/^/[$SERVER] /"
 }
 
-log "========== CCC Reference Data Update Started =========="
-log "Log file: $LOG_FILE"
+error_summary() {
+  SERVER=$1
+  echo -e "${YELLOW}--- $SERVER ---${RESET}"
 
-confirm_step "Step 1: Check Git branch?" && run_step "Step 1: Check Git branch" step1
-confirm_step "Step 2: Reset master and merge staging?" && run_step "Step 2: Reset master and merge staging" step2
-confirm_step "Step 3: Show Git log?" && run_step "Step 3: Show Git log" step3
-confirm_step "Step 4: Push changes to central repository?" && run_step "Step 4: Push changes" step4
-confirm_step "Step 5: Update CCC?" && run_step "Step 5: Update CCC" step5
-confirm_step "Step 6: Validate updates?" && run_step "Step 6: Validate updates" step6
+  ssh "$SERVER" "
+    cd $LOG_DIR || exit
 
-log "✅ All steps completed successfully."
-show_summary
+    for f in *; do
+      if [[ \"\$f\" == *.gz ]]; then
+        zgrep -Ei 'ERROR|WARN|FATAL|EXCEPTION' \"\$f\"
+      else
+        grep -Ei 'ERROR|WARN|FATAL|EXCEPTION' \"\$f\"
+      fi
+    done | awk '
+      /ERROR/ {e++}
+      /WARN/ {w++}
+      /FATAL/ {f++}
+      /EXCEPTION/ {x++}
+      END {print \"ERROR:\",e+0,\"WARN:\",w+0,\"FATAL:\",f+0,\"EXCEPTION:\",x+0}
+    '
+  "
+}
+
+case $MODE in
+1)
+  for SERVER in "${SERVERS[@]}"; do
+    search_logs "$SERVER" &
+  done
+  wait
+  ;;
+2)
+  echo -e "${RED}Press CTRL+C to stop live mode${RESET}"
+  for SERVER in "${SERVERS[@]}"; do
+    live_logs "$SERVER" &
+  done
+  wait
+  ;;
+3)
+  echo -e "${BLUE}========= CCC ERROR SUMMARY =========${RESET}"
+  for SERVER in "${SERVERS[@]}"; do
+    error_summary "$SERVER"
+  done
+  ;;
+esac
