@@ -18,110 +18,75 @@ LOG_PATTERNS=(
 "stdout.log*"
 )
 
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=5"
+
+EXPORT_FILE="ccc_logs_$(date +%Y%m%d_%H%M%S).txt"
+
 GREEN="\e[32m"
-RED="\e[31m"
-YELLOW="\e[33m"
 BLUE="\e[34m"
+RED="\e[31m"
 RESET="\e[0m"
 
 clear
-echo -e "${BLUE}========================================${RESET}"
-echo -e "${BLUE}        CCC CENTRAL LOG TOOL             ${RESET}"
-echo -e "${BLUE}========================================${RESET}"
+echo -e "${BLUE}========= CCC CENTRAL LOG TOOL =========${RESET}"
 echo ""
-echo "1) Search keyword in all logs (incl gz)"
-echo "2) Real-time live monitoring"
-echo "3) Error summary"
-echo "4) Exit"
+echo "1) Search keyword (all logs + gz)"
+echo "2) Real-time live logs"
+echo "3) Exit"
 
-read -p "Select option: " MODE
+read -p "Choose: " MODE
+[[ "$MODE" == "3" ]] && exit 0
 
-[[ "$MODE" == "4" ]] && exit 0
+read -p "Enter keyword: " KEYWORD
 
-read -p "Enter keyword (not required for summary): " KEYWORD
+touch "$EXPORT_FILE"
 
-build_cmd() {
-  local CMD=""
+echo "CCC LOG EXPORT - $(date)" >> "$EXPORT_FILE"
+echo "====================================" >> "$EXPORT_FILE"
 
-  for PAT in "${LOG_PATTERNS[@]}"; do
-    CMD+=" $LOG_DIR/$PAT"
-  done
-
-  echo "$CMD"
-}
-
-FILES=$(build_cmd)
-
-search_logs() {
+search_server() {
   SERVER=$1
-  echo -e "${GREEN}===== $SERVER =====${RESET}"
+  HOST=${SERVER#*@}
 
-  ssh "$SERVER" "
+  ssh $SSH_OPTS "$SERVER" "
     cd $LOG_DIR || exit
-
-    for f in $FILES; do
-      if [[ \"\$f\" == *.gz ]]; then
-        zgrep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
-      else
-        grep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
-      fi
+    for p in ${LOG_PATTERNS[@]}; do
+      for f in \$p; do
+        if [[ \"\$f\" == *.gz ]]; then
+          zgrep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
+        else
+          grep -in \"$KEYWORD\" \"\$f\" 2>/dev/null
+        fi
+      done
     done
-  "
+  " | sed "s/^/[$HOST] /" | tee -a "$EXPORT_FILE"
 }
 
-live_logs() {
+live_server() {
   SERVER=$1
-  echo -e "${GREEN}--- LIVE $SERVER ---${RESET}"
+  HOST=${SERVER#*@}
 
-  ssh "$SERVER" "
+  ssh $SSH_OPTS "$SERVER" "
     tail -F \
       $LOG_DIR/ccc-main.log* \
       $LOG_DIR/ccc-exception.log* \
-      $LOG_DIR/stdout.log* 2>/dev/null
-  " | sed "s/^/[$SERVER] /"
+      $LOG_DIR/stdout.log*
+  " | sed "s/^/[$HOST] /"
 }
 
-error_summary() {
-  SERVER=$1
-  echo -e "${YELLOW}--- $SERVER ---${RESET}"
-
-  ssh "$SERVER" "
-    cd $LOG_DIR || exit
-
-    for f in *; do
-      if [[ \"\$f\" == *.gz ]]; then
-        zgrep -Ei 'ERROR|WARN|FATAL|EXCEPTION' \"\$f\"
-      else
-        grep -Ei 'ERROR|WARN|FATAL|EXCEPTION' \"\$f\"
-      fi
-    done | awk '
-      /ERROR/ {e++}
-      /WARN/ {w++}
-      /FATAL/ {f++}
-      /EXCEPTION/ {x++}
-      END {print \"ERROR:\",e+0,\"WARN:\",w+0,\"FATAL:\",f+0,\"EXCEPTION:\",x+0}
-    '
-  "
-}
-
-case $MODE in
-1)
+if [[ "$MODE" == "1" ]]; then
   for SERVER in "${SERVERS[@]}"; do
-    search_logs "$SERVER" &
+    search_server "$SERVER" &
   done
   wait
-  ;;
-2)
-  echo -e "${RED}Press CTRL+C to stop live mode${RESET}"
+
+  echo ""
+  echo -e "${GREEN}Logs exported to:${RESET} $EXPORT_FILE"
+
+elif [[ "$MODE" == "2" ]]; then
+  echo -e "${RED}Live mode (not exported). Press CTRL+C to stop.${RESET}"
   for SERVER in "${SERVERS[@]}"; do
-    live_logs "$SERVER" &
+    live_server "$SERVER" &
   done
   wait
-  ;;
-3)
-  echo -e "${BLUE}========= CCC ERROR SUMMARY =========${RESET}"
-  for SERVER in "${SERVERS[@]}"; do
-    error_summary "$SERVER"
-  done
-  ;;
-esac
+fi
